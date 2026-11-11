@@ -1,4 +1,4 @@
-"""本金浮亏 / 回本天数 / 价 MAE 等回测重点指标."""
+"""本金浮亏 / 回本天数等回测重点指标."""
 from __future__ import annotations
 
 from typing import Sequence
@@ -22,6 +22,7 @@ def round_metrics(
             "cost": cost,
             "max_capital_dd_amt": 0.0,
             "max_capital_dd_pct": 0.0,
+            "max_drawdown_pct": 0.0,
             "recovered": False,
             "days_entry_to_recover": None,
             "days_trough_to_recover": None,
@@ -57,10 +58,19 @@ def round_metrics(
             break
 
     pnl = float(eqs[-1] - cost)
+    # 权益路径峰值回撤（相对峰值）
+    peak = eqs[0]
+    max_dd_eq = 0.0
+    for eq in eqs:
+        if eq > peak:
+            peak = eq
+        if peak > 0:
+            max_dd_eq = min(max_dd_eq, (eq - peak) / peak)
     return {
         "cost": cost,
         "max_capital_dd_amt": max_dd_amt,
         "max_capital_dd_pct": max_dd_pct,
+        "max_drawdown_pct": float(max_dd_eq),
         "recovered": recovered,
         "days_entry_to_recover": days_entry,
         "days_trough_to_recover": days_trough,
@@ -69,14 +79,6 @@ def round_metrics(
         "pnl": pnl,
         "pnl_pct": pnl / cost,
     }
-
-
-def price_mae(entry_price: float, low_path: Sequence[float]) -> float:
-    """价 MAE：买入价到路径最低价跌幅（不含股息）."""
-    if not low_path or entry_price <= 0:
-        return 0.0
-    mn = min(low_path)
-    return (mn - entry_price) / entry_price
 
 
 def summarize_rounds(rounds: list[dict]) -> dict:
