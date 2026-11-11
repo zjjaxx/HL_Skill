@@ -34,30 +34,22 @@ def main() -> None:
     p.add_argument("--end", default=pd.Timestamp.today().strftime("%Y-%m-%d"))
     p.add_argument("--skip-screen", action="store_true")
     p.add_argument("--skip-browser", action="store_true")
-    p.add_argument("--bond-demo", action="store_true", help="国债收益率用常量演示序列")
+    p.add_argument("--force-bond", action="store_true", help="忽略国债缓存重新抓取")
     p.add_argument("--n", type=int, default=0)
     p.add_argument("--mode", choices=["pybroker", "multi", "both"], default="both")
     args = p.parse_args()
 
     report: dict = {"steps": []}
 
-    # Bond yield
-    if args.bond_demo:
-        from fetch_bond_yield import OUT_PATH
-
-        dates = pd.date_range("2015-01-01", args.end, freq="B")
-        pd.DataFrame({"date": dates, "yield_30y": 2.5}).to_csv(OUT_PATH, index=False)
-        report["steps"].append({"bond": "demo", "path": str(OUT_PATH)})
-    else:
-        try:
-            bond = load_or_scrape(force=False)
-            report["steps"].append({"bond": "ok", "rows": len(bond)})
-        except Exception as e:
-            from fetch_bond_yield import OUT_PATH
-
-            dates = pd.date_range("2015-01-01", args.end, freq="B")
-            pd.DataFrame({"date": dates, "yield_30y": 2.5}).to_csv(OUT_PATH, index=False)
-            report["steps"].append({"bond": f"fallback-demo:{e}", "path": str(OUT_PATH)})
+    # Bond yield：失败重试后仍失败则报错，不用 demo/默认值
+    bond = load_or_scrape(force=args.force_bond, use_browser=not args.skip_browser)
+    report["steps"].append(
+        {
+            "bond": "ok",
+            "rows": len(bond),
+            "latest_bond_30y_pct": float(bond["yield_30y"].iloc[-1]),
+        }
+    )
 
     symbols = list(args.symbols)
     if not symbols and not args.skip_screen:
