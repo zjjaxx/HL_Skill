@@ -1,6 +1,8 @@
 """
 多账号滚动回测引擎（策略文档「多账号滚动」完整实现）。
-每个账号独立 100 万、独立减仓档；同月限购全局；接单指针环形找空仓账号。
+
+默认按需建户：有空闲账号则复用；全忙则新建一个 100 万账号接单。
+也可 --n N 固定账号数（全忙记 miss_busy，不再新建）。
 """
 from __future__ import annotations
 
@@ -15,7 +17,6 @@ import pandas as pd
 
 from config import (
     ACCOUNT_CASH,
-    DEFAULT_N_ACCOUNTS,
     MONTH_TRIM_RATIO,
     OUTPUT_DIR,
     WEEK_TRIM_RATIO,
@@ -54,37 +55,67 @@ class MultiAccountEngine:
         signal_df: pd.DataFrame,
         raw_close: pd.Series,
         dividends: pd.DataFrame,
-        n_accounts: int = DEFAULT_N_ACCOUNTS,
+        n_accounts: int = 0,
         lot: int = 100,
     ):
+        """
+        n_accounts <= 0：按需建户（推荐）。
+        n_accounts > 0：固定 N 个账号；全忙只记 miss_busy。
+        """
         self.df = signal_df.sort_index()
         self.raw_close = raw_close.reindex(self.df.index).ffill()
         self.divs = normalize_dividends(dividends) if not dividends.empty else pd.DataFrame(
             columns=["ex_date", "cash_ps", "year", "month"]
         )
-        self.n = n_accounts
+        self.on_demand = n_accounts <= 0
         self.lot = lot
-        self.accounts = [Account(aid=i) for i in range(n_accounts)]
+        if self.on_demand:
+            self.accounts: list[Account] = []
+            self.n = 0
+        else:
+            self.accounts = [Account(aid=i) for i in range(n_accounts)]
+            self.n = n_accounts
         self.next_ptr = 0
         self.miss_busy = 0
         self.miss_month = 0
         self.buy_months: set[str] = set()
         self.rounds: list[dict] = []
+        self.peak_busy = 0
+        self.n_created = 0
 
     def _month_key(self, dt: pd.Timestamp) -> str:
         return f"{dt.year:04d}-{dt.month:02d}"
 
+    def _new_account(self) -> Account:
+        a = Account(aid=len(self.accounts), cash=ACCOUNT_CASH)
+        self.accounts.append(a)
+        self.n = len(self.accounts)
+        self.n_created += 1
+        return a
+
+    def _acquire_account(self) -> tuple[Account | None, int | None]:
+        """优先复用空闲账号；按需模式下全忙则新建。"""
+        if self.accounts:
+            n = len(self.accounts)
+            for offset in range(n):
+                idx = (self.next_ptr + offset) % n
+                if not self.accounts[idx].busy:
+                    return self.accounts[idx], idx
+        if self.on_demand:
+            a = self._new_account()
+            return a, len(self.accounts) - 1
+        return None, None
+
     def _mark_equity(self, dt: pd.Timestamp) -> None:
         px = float(self.raw_close.loc[dt])
+        busy = 0
         for a in self.accounts:
-            eq = a.cash + a.shares * px
-            # For open round path: realized already in cash; track vs cost
+            if a.busy:
+                busy += 1
             if a.busy or a.cost > 0:
-                path_eq = a.realized + a.shares * px
-                # realized tracks sell proceeds + dividends; cash includes idle.
                 # 本金浮亏路径 = 已实现(卖出回笼+股息) + 余仓×不复权收盘
-                # 开仓后 realized 从 0 起，买入时 cost 记账，现金减少不进 realized。
                 a.equity_path.append((dt, a.realized + a.shares * px))
+        self.peak_busy = max(self.peak_busy, busy)
 
     def _credit_dividend(self, dt: pd.Timestamp) -> None:
         cps = cash_dividends_on_date(self.divs, dt)
@@ -108,7 +139,6 @@ class MultiAccountEngine:
             )
 
     def _buy(self, a: Account, dt: pd.Timestamp, px: float) -> None:
-        # 全仓买入，按手取整
         shares = int(a.cash // (px * self.lot)) * self.lot
         if shares <= 0:
             return
@@ -138,10 +168,9 @@ class MultiAccountEngine:
         shares = min(shares, a.shares)
         if shares <= 0:
             return
-        # 按手向下
         shares = int(shares // self.lot) * self.lot
         if shares <= 0 and reason == "clear":
-            shares = a.shares  # allow odd lot on clear
+            shares = a.shares
         if shares <= 0:
             return
         amount = shares * px
@@ -168,7 +197,6 @@ class MultiAccountEngine:
         m = round_metrics(cost=a.cost, path=path, entry_date=a.entry_date, exit_date=dt)
         m.update({"account": a.aid, "trades": list(a.trades)})
         self.rounds.append(m)
-        # reset round state but keep cash
         a.cost = 0.0
         a.entry_date = None
         a.week_trimmed = False
@@ -193,7 +221,6 @@ class MultiAccountEngine:
         if not a.busy:
             return
 
-        # yield ladder
         y100 = float(row.get("yield_pctile", np.nan)) * 100 if pd.notna(row.get("yield_pctile")) else np.nan
         if np.isnan(y100):
             return
@@ -209,7 +236,6 @@ class MultiAccountEngine:
                 if not a.busy:
                     return
         if y100 <= YIELD_LADDER_END and a.busy:
-            # 最后一档后剩余清仓
             self._sell(a, dt, px, a.shares, "clear")
 
     def run(self) -> dict:
@@ -219,43 +245,40 @@ class MultiAccountEngine:
             if np.isnan(px) or px <= 0:
                 continue
 
-            # sells first on each account
             for a in self.accounts:
                 self._trim_logic(a, row, dt, px)
 
-            # buy
             if bool(row.get("buy_signal")):
                 mk = self._month_key(dt)
                 if mk in self.buy_months:
                     self.miss_month += 1
                 else:
-                    bought = False
-                    for offset in range(self.n):
-                        idx = (self.next_ptr + offset) % self.n
-                        a = self.accounts[idx]
-                        if not a.busy:
-                            self._buy(a, dt, px)
-                            if a.busy:
-                                self.buy_months.add(mk)
-                                self.next_ptr = (idx + 1) % self.n
-                                bought = True
-                                break
-                    if not bought:
+                    a, idx = self._acquire_account()
+                    if a is None or idx is None:
                         self.miss_busy += 1
+                    else:
+                        self._buy(a, dt, px)
+                        if a.busy:
+                            self.buy_months.add(mk)
+                            self.next_ptr = (idx + 1) % max(len(self.accounts), 1)
 
             self._mark_equity(dt)
 
-        # liquidate leftover for metrics
-        last = self.df.index[-1]
-        px = float(self.raw_close.loc[last])
-        for a in self.accounts:
-            if a.busy:
-                self._sell(a, last, px, a.shares, "force_eod")
+        if len(self.df.index) > 0:
+            last = self.df.index[-1]
+            px = float(self.raw_close.loc[last])
+            for a in self.accounts:
+                if a.busy:
+                    self._sell(a, last, px, a.shares, "force_eod")
 
         end_equity = sum(a.cash for a in self.accounts)
-        pool_ret = end_equity / (self.n * ACCOUNT_CASH) - 1
+        denom = self.n * ACCOUNT_CASH if self.n > 0 else ACCOUNT_CASH
+        pool_ret = (end_equity / denom - 1) if self.n > 0 else 0.0
         return {
             "n_accounts": self.n,
+            "on_demand": self.on_demand,
+            "n_created": self.n_created if self.on_demand else self.n,
+            "peak_busy": self.peak_busy,
             "end_equity": end_equity,
             "pool_return": pool_ret,
             "miss_busy": self.miss_busy,
@@ -270,16 +293,11 @@ def find_min_accounts(
     signal_df: pd.DataFrame,
     raw_close: pd.Series,
     dividends: pd.DataFrame,
-    max_n: int = 20,
 ) -> tuple[int, dict]:
-    """找使 miss_busy==0 的最小 N。"""
-    last = None
-    for n in range(1, max_n + 1):
-        eng = MultiAccountEngine(signal_df, raw_close, dividends, n_accounts=n)
-        last = eng.run()
-        if last["miss_busy"] == 0:
-            return n, last
-    return max_n, last  # type: ignore
+    """按需建户跑一遍，返回实际用到的账号数（= 峰值并发所需的最小 N）。"""
+    result = MultiAccountEngine(signal_df, raw_close, dividends, n_accounts=0).run()
+    n = int(result.get("n_accounts") or 0)
+    return n, result
 
 
 def main() -> None:
@@ -287,7 +305,12 @@ def main() -> None:
     p.add_argument("--signals", required=True)
     p.add_argument("--raw", required=True, help="raw daily csv with date,close")
     p.add_argument("--dividend", required=True)
-    p.add_argument("--n", type=int, default=0, help="0 = auto min N")
+    p.add_argument(
+        "--n",
+        type=int,
+        default=0,
+        help="0=按需建户（默认）；>0 固定账号数（全忙记 miss_busy）",
+    )
     p.add_argument("--output", default=str(OUTPUT_DIR / "multi_account_result.json"))
     args = p.parse_args()
 
@@ -309,6 +332,8 @@ def main() -> None:
         json.dumps(
             {
                 "auto_n": result.get("auto_n"),
+                "on_demand": result.get("on_demand"),
+                "peak_busy": result.get("peak_busy"),
                 "pool_return": result["pool_return"],
                 "miss_busy": result["miss_busy"],
                 "miss_month": result["miss_month"],
