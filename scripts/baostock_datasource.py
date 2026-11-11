@@ -22,6 +22,8 @@ SIGNAL_COLS = [
     "div_yield_pct",
     "yield_pctile",
     "hard_ok",
+    "cashflow_ok",
+    "yield_pctile_ok",
     "close_raw",
     "bb_mid",
     "m_bb_mid",
