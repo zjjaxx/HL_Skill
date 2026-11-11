@@ -46,7 +46,6 @@ YIELD_LADDER_TRIM = 0.10
 
 # --- Multi-account ---
 ACCOUNT_CASH = 1_000_000.0
-DEFAULT_N_ACCOUNTS = 3
 
 # --- East Money pages used by opencli browser ---
 EASTMONEY_DIVIDEND_BOARD = (
@@ -57,9 +56,6 @@ EASTMONEY_XUANGU = (
 )
 EASTMONEY_BOND_YIELD = (
     "https://data.eastmoney.com/cjsj/zmgzsyl.html"  # 中美国债；中国30年在第4列
-)
-EASTMONEY_GUXILV_API_HINT = (
-    "https://datacenter-web.eastmoney.com/api/data/v1/get"
 )
 
 SESSION_NAME = "hongli-em"
