@@ -1,9 +1,9 @@
 """
 今日扫描主流程（skill 约定）：
 1) 查 30Y 国债
-2) 东财条件选股粗筛：总市值>1000亿 且 最新股息率(TTM)≥2×30Y
+2) 东财条件选股粗筛：总市值>门槛 且 最新股息率(TTM)≥2×30Y
 3) 对每只候选：特征/硬门槛/布林信号 + 多账号策略回测
-4) 只写 Markdown 报告 REPORT.md（今日推荐 + 全部粗筛股历史回测）
+4) 只写 Markdown 报告 REPORT.md（今日推荐 + 全部粗筛股历史回测 + 文末有轮次汇总表）
 """
 from __future__ import annotations
 
@@ -287,7 +287,7 @@ def _write_detail_block(lines: list[str], r: dict) -> None:
     lines.append(f"| 分位 ≥ 80% | {_cond_mark(cond.get('yield_pctile_ok'))} |")
     lines.append(f"| 连续 3 年分红 | {_cond_mark(r.get('consec_div'))} |")
     lines.append(f"| 现金流覆盖分红 | {_cond_mark(r.get('cashflow_ok'))} |")
-    lines.append(f"| 市值 ≥ 1000 亿 | {_cond_mark(r.get('cap_ok'))} |")
+    lines.append(f"| 市值 ≥ {MARKET_CAP_MIN_YI:g} 亿 | {_cond_mark(r.get('cap_ok'))} |")
     lines.append("")
     lines.append("#### 买入条件检查")
     lines.append("")
@@ -315,6 +315,34 @@ def _write_detail_block(lines: list[str], r: dict) -> None:
     )
 
 
+def _round_row_cells(rr: dict, *, with_stock: bool = False, code: str = "", name: str = "") -> str:
+    recover = rr.get("days_entry_to_recover")
+    recover_s = "-" if recover is None else str(recover)
+    prefix = ""
+    if with_stock:
+        prefix = f"| {code} | {name or '-'} "
+    return (
+        f"{prefix}| {rr.get('entry_date') or '-'} |"
+        f" {rr.get('exit_date') or '-'} |"
+        f" {_fmt(rr.get('div_yield_pct'))}% |"
+        f" {_fmt(rr.get('pct_b'), 3)} |"
+        f" {_fmt(rr.get('w_pct_b'), 3)} |"
+        f" {_fmt(rr.get('w_close'))}/{_fmt(rr.get('m_bb_mid'))} |"
+        f" {_cond_mark(rr.get('hard_ok'))} |"
+        f" {_cond_mark(rr.get('yield_vs_bond_ok'))} |"
+        f" {_cond_mark(rr.get('yield_pctile_ok'))} |"
+        f" {_cond_mark(rr.get('consec_div'))} |"
+        f" {_cond_mark(rr.get('cashflow_ok'))} |"
+        f" {_cond_mark(rr.get('cap_ok'))} |"
+        f" {_fmt(rr.get('cost'), 0)} |"
+        f" {_pct(rr.get('pnl_pct'))} |"
+        f" {_fmt(rr.get('max_capital_dd_amt'), 0)}"
+        f" ({_pct(rr.get('max_capital_dd_pct'))}) |"
+        f" {recover_s} |"
+        f" {_pct(rr.get('max_drawdown_pct'))} |"
+    )
+
+
 def _write_history_table(lines: list[str], bt: dict | None) -> None:
     lines.append("#### 历史回测轮次")
     lines.append("")
@@ -337,34 +365,72 @@ def _write_history_table(lines: list[str], bt: dict | None) -> None:
         lines.append("_无完成轮次。_")
         return
     lines.append(
-        "| 买点 | 买入股息率 | 日%b | 周%b | 价/月中 | 硬 | ≥2×30Y | 分位 |"
+        "| 买点 | 卖出 | 买入股息率 | 日%b | 周%b | 价/月中 | 硬 | ≥2×30Y | 分位 |"
         " 连分 | 现金流 | 市值 | 本金 | 收益率 | 最大亏损本金 | 回本天数 | 最大回撤 |"
     )
     lines.append(
-        "|---|---:|---:|---:|---|---|---|---|---|---|---|---:|---:|---:|---:|---:|"
+        "|---|---|---:|---:|---:|---|---|---|---|---|---|---|---:|---:|---:|---:|---:|"
     )
     for rr in rounds:
-        recover = rr.get("days_entry_to_recover")
-        recover_s = "-" if recover is None else str(recover)
+        lines.append(_round_row_cells(rr, with_stock=False))
+
+
+def collect_rounds_with_stock(all_rows: list[dict]) -> list[dict]:
+    """Flatten completed rounds across stocks for the summary table."""
+    rows: list[dict] = []
+    for r in all_rows:
+        if r.get("error"):
+            continue
+        bt = r.get("backtest") or {}
+        for rr in bt.get("rounds") or []:
+            rows.append(
+                {
+                    **rr,
+                    "code": r.get("code"),
+                    "name": r.get("name"),
+                }
+            )
+    rows.sort(key=lambda x: (str(x.get("entry_date") or ""), str(x.get("code") or "")))
+    return rows
+
+
+def _write_all_rounds_table(lines: list[str], all_rows: list[dict]) -> None:
+    rounds = collect_rounds_with_stock(all_rows)
+    lines.append("## 3. 全部有轮次回测汇总")
+    lines.append("")
+    if not rounds:
+        lines.append("_当前粗筛标的均无完成轮次。_")
+        lines.append("")
+        return
+    n_stocks = len({r.get("code") for r in rounds})
+    pnls = [r.get("pnl_pct") for r in rounds if r.get("pnl_pct") is not None]
+    dds = [r.get("max_capital_dd_pct") for r in rounds if r.get("max_capital_dd_pct") is not None]
+    wins = [p for p in pnls if p > 0]
+    lines.append(
+        f"共 **{len(rounds)}** 轮 · 覆盖 **{n_stocks}** 只股票"
+        f" · 胜率 {_pct(len(wins) / len(pnls) if pnls else None)}"
+        f" · 平均收益 {_pct(sum(pnls) / len(pnls) if pnls else None)}"
+        f" · 平均本金浮亏 {_pct(sum(dds) / len(dds) if dds else None)}"
+        f" · 最差本金浮亏 {_pct(min(dds) if dds else None)}"
+    )
+    lines.append("")
+    lines.append(
+        "| 代码 | 名称 | 买点 | 卖出 | 买入股息率 | 日%b | 周%b | 价/月中 | 硬 | ≥2×30Y | 分位 |"
+        " 连分 | 现金流 | 市值 | 本金 | 收益率 | 最大亏损本金 | 回本天数 | 最大回撤 |"
+    )
+    lines.append(
+        "|---|---|---|---|---:|---:|---:|---|---|---|---|---|---|---|---:|---:|---:|---:|---:|"
+    )
+    for rr in rounds:
         lines.append(
-            f"| {rr.get('entry_date') or '-'} |"
-            f" {_fmt(rr.get('div_yield_pct'))}% |"
-            f" {_fmt(rr.get('pct_b'), 3)} |"
-            f" {_fmt(rr.get('w_pct_b'), 3)} |"
-            f" {_fmt(rr.get('w_close'))}/{_fmt(rr.get('m_bb_mid'))} |"
-            f" {_cond_mark(rr.get('hard_ok'))} |"
-            f" {_cond_mark(rr.get('yield_vs_bond_ok'))} |"
-            f" {_cond_mark(rr.get('yield_pctile_ok'))} |"
-            f" {_cond_mark(rr.get('consec_div'))} |"
-            f" {_cond_mark(rr.get('cashflow_ok'))} |"
-            f" {_cond_mark(rr.get('cap_ok'))} |"
-            f" {_fmt(rr.get('cost'), 0)} |"
-            f" {_pct(rr.get('pnl_pct'))} |"
-            f" {_fmt(rr.get('max_capital_dd_amt'), 0)}"
-            f" ({_pct(rr.get('max_capital_dd_pct'))}) |"
-            f" {recover_s} |"
-            f" {_pct(rr.get('max_drawdown_pct'))} |"
+            _round_row_cells(
+                rr,
+                with_stock=True,
+                code=str(rr.get("code") or ""),
+                name=str(rr.get("name") or ""),
+            )
         )
+    lines.append("")
 
 
 def _write_stock_section(lines: list[str], r: dict, *, heading: str) -> None:
@@ -381,7 +447,7 @@ def _write_stock_section(lines: list[str], r: dict, *, heading: str) -> None:
 
 
 def write_report_md(summary: dict, path: Path) -> None:
-    """只输出 Markdown：①今日推荐（无则跳过）②全部东财粗筛股历史回测。"""
+    """只输出 Markdown：①今日推荐（无则跳过）②全部东财粗筛股历史回测 ③有轮次汇总表。"""
     buy = summary.get("buy_today_first") or []
     all_rows = summary.get("all_results") or []
     lines: list[str] = []
@@ -412,6 +478,8 @@ def write_report_md(summary: dict, path: Path) -> None:
         tag = " · 今日推荐" if r.get("buy_today") else ""
         title = f"{r.get('code')} {r.get('name', '')}{tag}"
         _write_stock_section(lines, r, heading=title)
+
+    _write_all_rounds_table(lines, all_rows)
 
     path.write_text("\n".join(lines), encoding="utf-8")
 
