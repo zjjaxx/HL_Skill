@@ -106,7 +106,7 @@ def main() -> None:
     p.add_argument("--start", default="2018-01-01")
     p.add_argument("--end", default=pd.Timestamp.today().strftime("%Y-%m-%d"))
     p.add_argument("--mode", choices=["pybroker", "multi", "both"], default="both")
-    p.add_argument("--n", type=int, default=0, help="multi-account N; 0=auto")
+    p.add_argument("--n", type=int, default=0, help="multi-account N; 0=按需建户")
     p.add_argument("--output", default=str(OUTPUT_DIR / "backtest_result.json"))
     args = p.parse_args()
 
