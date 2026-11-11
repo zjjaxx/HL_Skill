@@ -1,9 +1,9 @@
 """
-东方财富条件选股粗筛：总市值>1000亿 + 最新股息率(TTM)≥2×30Y。
+东方财富条件选股粗筛：总市值>门槛 + 最新股息率(TTM)≥2×30Y。
 
 流程：
 1) opencli browser 打开 https://xuangu.eastmoney.com/（session=hongli-em）
-2) 调用东财条件选股 search-code API（与页面「总市值>1000亿;最新股息率…」等价）
+2) 调用东财条件选股 search-code API（与页面「总市值>N亿;最新股息率…」等价）
 3) 落盘 data/cache/xuangu_universe.json
 
 注意：此处股息率是东财「最新股息率(TTM)」，不是策略完整一年股息。
@@ -201,7 +201,7 @@ def screen_xuangu(
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="Xuangu: cap>1000亿 + EM最新股息率≥2×30Y")
+    p = argparse.ArgumentParser(description="Xuangu: cap>门槛 + EM最新股息率≥2×30Y")
     p.add_argument("--min-cap-yi", type=float, default=MARKET_CAP_MIN_YI)
     p.add_argument("--bond-yield", type=float, required=True, help="China 30Y %%")
     p.add_argument("--min-yield", type=float, default=None, help="override EM yield floor %%")
