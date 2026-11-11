@@ -121,8 +121,7 @@ def _forming_tf_bollinger(
     """
     As-of-each-day higher-TF Bollinger using the *forming* bar (WTD / MTD).
 
-    策略要求买入日当天周 %b 仍 ≤0.25，禁止「上周曾 ≤0.25、本周已修复仍可买」。
-    因此周线不能只用上一根已收完 K 的 shift(1)，而要用「截至当日的当周/当月」收盘重算 %b。
+    例：10 月 15 日 → 用含当日收盘的当周/当月 K 重算中轨与 %b（与日线同一口径）。
     """
     cols = ["bb_mid", "bb_upper", "bb_lower", "bb_width", "pct_b", "tf_close", "tf_volume"]
     out = pd.DataFrame(index=daily.index, columns=cols, dtype=float)
@@ -180,9 +179,13 @@ def _forming_tf_bollinger(
 
 def attach_higher_tf_to_daily(qfq: pd.DataFrame) -> pd.DataFrame:
     """
-    周线：当日 forming（WTD）布林/%b —— 满足「买入日当天仍 ≤0.25」。
-    月中轨（step1）：上一根*已收完*月线中轨。
-    月 %b（减仓）：当日 forming（MTD）%b。
+    日 / 周 / 月统一：用「截至当日」的 forming K 重算布林。
+
+    - 日线：当日收盘的 BB(20,2) / %b
+    - 周线：当周 WTD forming（10/15 → 含 10/15 的当周收盘重算）
+    - 月线：当月 MTD forming（10/15 → 含 10/15 的当月收盘重算中轨/%b）
+
+    买点 step1：最新价（当日周 forming 收 = 日收）≤ 当月 forming 中轨。
     """
     daily = qfq.copy()
     if not isinstance(daily.index, pd.DatetimeIndex):
@@ -190,20 +193,7 @@ def attach_higher_tf_to_daily(qfq: pd.DataFrame) -> pd.DataFrame:
     daily = daily.sort_index()
 
     w = _forming_tf_bollinger(daily, "W-FRI")
-    m_form = _forming_tf_bollinger(daily, "M")
-
-    # 已收完月线中轨：用完整月 resample 后 shift(1) asof
-    monthly = resample_ohlcv(daily, "ME")
-    m_bb = bollinger(monthly["close"])
-    m_completed = m_bb.shift(1)
-    m_completed.index.name = "date"
-    left = pd.DataFrame({"date": daily.index}).sort_values("date")
-    m_mid_asof = pd.merge_asof(
-        left,
-        m_completed.reset_index().rename(columns={"bb_mid": "m_bb_mid_completed"}),
-        on="date",
-        direction="backward",
-    ).set_index("date")
+    m = _forming_tf_bollinger(daily, "M")
 
     out = attach_daily_indicators(daily)
     out["w_bb_mid"] = w["bb_mid"]
@@ -217,12 +207,12 @@ def attach_higher_tf_to_daily(qfq: pd.DataFrame) -> pd.DataFrame:
     out["w_vol_shrink"] = w["vol_shrink"]
     out["w_close"] = w["tf_close"]
 
-    # step1 用已收完月中轨；减仓用 MTD %b
-    out["m_bb_mid"] = m_mid_asof["m_bb_mid_completed"]
-    out["m_bb_upper"] = m_form["bb_upper"]
-    out["m_bb_lower"] = m_form["bb_lower"]
-    out["m_bb_width"] = m_form["bb_width"]
-    out["m_pct_b"] = m_form["pct_b"]
+    out["m_bb_mid"] = m["bb_mid"]
+    out["m_bb_upper"] = m["bb_upper"]
+    out["m_bb_lower"] = m["bb_lower"]
+    out["m_bb_width"] = m["bb_width"]
+    out["m_pct_b"] = m["pct_b"]
+    out["m_close"] = m["tf_close"]
     return out
 
 
