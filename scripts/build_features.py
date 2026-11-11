@@ -8,12 +8,65 @@ from pathlib import Path
 
 import pandas as pd
 
-from config import CACHE_DIR, OUTPUT_DIR
-from fetch_baostock import fetch_pair
+from config import CACHE_DIR, OUTPUT_DIR, YIELD_SERIES_START
+from fetch_baostock import fetch_pair, to_bs_code
 from fetch_bond_yield import load_or_scrape
 from fundamental import attach_fundamental_columns
 from indicators import attach_higher_tf_to_daily
 from signals import build_signal_frame
+
+
+def _longest_cached_raw(symbol: str, end: str) -> pd.DataFrame | None:
+    """Prefer longest local raw_*.csv covering end (offline fallback)."""
+    stem = to_bs_code(symbol).replace(".", "_")
+    out_dir = CACHE_DIR / stem
+    if not out_dir.exists():
+        return None
+    best = None
+    best_start = None
+    end_ts = pd.Timestamp(end)
+    for p in out_dir.glob("raw_*.csv"):
+        # raw_{start}_{end}.csv
+        parts = p.stem.split("_", 2)
+        if len(parts) < 3:
+            continue
+        try:
+            # stem like raw_2007-03-01_2026-11-10
+            _, s, e = p.stem.split("_", 2)
+            s_ts, e_ts = pd.Timestamp(s), pd.Timestamp(e)
+        except Exception:
+            continue
+        if e_ts < end_ts:
+            continue
+        if best_start is None or s_ts < best_start:
+            best_start = s_ts
+            best = p
+    if best is None:
+        return None
+    return pd.read_csv(best, parse_dates=["date"])
+
+
+def _raw_for_yield_percentile(
+    symbol: str,
+    start: str,
+    end: str,
+    raw_window: pd.DataFrame,
+    div: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Load listing-scale raw for yield percentile; fall back to longest cache / window."""
+    yield_start = min(pd.Timestamp(start), pd.Timestamp(YIELD_SERIES_START)).strftime(
+        "%Y-%m-%d"
+    )
+    if pd.Timestamp(yield_start) >= pd.Timestamp(start):
+        return raw_window, div
+    try:
+        pair_long = fetch_pair(symbol, yield_start, end, cache=True)
+        return pair_long["raw"], pair_long["dividend"]
+    except Exception:
+        cached = _longest_cached_raw(symbol, end)
+        if cached is not None and len(cached) > len(raw_window):
+            return cached, div
+        return raw_window, div
 
 
 def build_for_symbol(
@@ -27,6 +80,9 @@ def build_for_symbol(
     qfq = pair["qfq"].copy()
     raw = pair["raw"].copy()
     div = pair["dividend"]
+
+    # 股息分位按「上市以来」：拉长历史算 dy/pctile，再对齐到回测窗口（避免 start=2018 截断压低分位）
+    raw_for_yield, div = _raw_for_yield_percentile(symbol, start, end, raw, div)
 
     qfq["date"] = pd.to_datetime(qfq["date"])
     qfq = qfq.set_index("date").sort_index()
@@ -45,7 +101,7 @@ def build_for_symbol(
             )
 
     feat = attach_fundamental_columns(
-        raw=raw,
+        raw=raw_for_yield,
         qfq_feat=feat,
         dividend=div,
         bond=bond,

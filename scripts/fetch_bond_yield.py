@@ -18,41 +18,35 @@ def _run(cmd: list[str], timeout: int = 120) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
 
+def _parse_json_stdout(stdout: str):
+    text = (stdout or "").strip()
+    if not text:
+        return None
+    start = text.find("{")
+    start_arr = text.find("[")
+    if start < 0 and start_arr < 0:
+        return None
+    if start < 0:
+        start = start_arr
+    elif start_arr >= 0:
+        start = min(start, start_arr)
+    chunk = text[start:]
+    decoder = json.JSONDecoder()
+    data, _ = decoder.raw_decode(chunk)
+    return data
+
+
 def scrape_eastmoney_bond_yield(session: str = SESSION_NAME) -> pd.DataFrame:
     """
-    Use opencli browser + network capture against 东方财富国债收益率页.
-    Prefer XHR JSON body over DOM scrape.
+    Use opencli browser against 东方财富国债收益率页.
+    Prefer DOM table parse; network is not the primary path.
     """
-    open_cmd = [
-        "opencli",
-        "browser",
-        session,
-        "open",
-        EASTMONEY_BOND_YIELD,
-        "--window",
-        "background",
-        "-f",
-        "json",
-    ]
-    r = _run(open_cmd)
+    r = _run(["opencli", "browser", session, "open", EASTMONEY_BOND_YIELD])
     if r.returncode != 0:
         raise RuntimeError(f"browser open failed: {r.stderr or r.stdout}")
 
-    _run(["opencli", "browser", session, "wait", "time", "3", "-f", "json"])
-    net = _run(
-        [
-            "opencli",
-            "browser",
-            session,
-            "network",
-            "-f",
-            "json",
-        ]
-    )
-    preview = net.stdout
-    (CACHE_DIR / "bond_network_preview.json").write_text(preview or "[]", encoding="utf-8")
+    _run(["opencli", "browser", session, "wait", "time", "3"])
 
-    # Try known datacenter patterns via eval fallback if network body not pulled.
     eval_js = r"""(() => {
       const rows = [];
       document.querySelectorAll('table tr').forEach(tr => {
@@ -61,33 +55,16 @@ def scrape_eastmoney_bond_yield(session: str = SESSION_NAME) -> pd.DataFrame:
       });
       return rows.slice(0, 500);
     })()"""
-    ev = _run(
-        [
-            "opencli",
-            "browser",
-            session,
-            "eval",
-            eval_js,
-            "-f",
-            "json",
-        ]
-    )
+    ev = _run(["opencli", "browser", session, "eval", eval_js])
     rows = []
-    try:
-        payload = json.loads(ev.stdout)
-        # envelope may wrap result
-        data = payload.get("result", payload) if isinstance(payload, dict) else payload
-        if isinstance(data, list):
-            rows = data
-    except json.JSONDecodeError:
-        rows = []
+    data = _parse_json_stdout(ev.stdout)
+    if isinstance(data, list):
+        rows = data
 
     records = []
     for rrow in rows:
         if not isinstance(rrow, list) or len(rrow) < 2:
             continue
-        # Heuristic: date + ... + 30Y column. East Money layout varies;
-        # keep first numeric yield-like fields.
         date_s = rrow[0]
         nums = []
         for cell in rrow[1:]:
@@ -97,15 +74,17 @@ def scrape_eastmoney_bond_yield(session: str = SESSION_NAME) -> pd.DataFrame:
                 continue
         if not nums:
             continue
-        # Prefer last column as longest tenor when table is 中债收益率曲线日度
-        y30 = nums[-1] if len(nums) >= 1 else None
-        if y30 is None:
-            continue
+        y30 = nums[-1]
         records.append({"date": date_s, "yield_30y": y30 / (100 if y30 > 1 else 1)})
+
+    try:
+        _run(["opencli", "browser", session, "close"])
+    except Exception:
+        pass
 
     if not records:
         raise RuntimeError(
-            "未能从东财页解析 30Y 国债收益率。请检查 network 抓包后手工补 data/cache/cn_bond_30y.csv"
+            "未能从东财页 DOM 解析 30Y 国债收益率。可手工补 data/cache/cn_bond_30y.csv"
         )
 
     df = pd.DataFrame(records)

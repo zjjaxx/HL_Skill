@@ -1,44 +1,81 @@
-# 东方财富筛选（opencli）
+# 东方财富筛选（opencli browser + 条件选股）
 
 ## 原则
 
-1. 先用现成适配器，再用 `opencli browser`。
-2. browser：先 `opencli doctor`，session 名固定 `hongli-em`。
-3. 优先 `network` 抓 JSON API，其次 `eval`/`extract` DOM。
-4. 不要跨会话复用 numeric ref；每次 `state`/`find` 再操作。
+1. **今日粗筛主路径**：东财条件选股 API（`search-code`），等价于页面「总市值>1000亿;最新股息率…」。
+2. browser：先 `opencli doctor`，session 名固定 `hongli-em`；打开 xuangu 页作对齐，**筛选结果以 API 为准**。
+3. 粗筛股息率 = 东财 **最新股息率(TTM)**，**不是**策略完整一年股息。
+4. 适配器 `opencli eastmoney quote/rank/...` 仅补字段；分红页 DOM 仅调试/回测用。
+5. 不要跨会话复用 numeric ref；`browser` 子命令不要加 `-f json`。
 
-## 适配器（无需 browser）
+## 主流程页面 / API
 
-```bash
-opencli eastmoney quote 601318,600519 -f json
-opencli eastmoney rank --market hs-a --sort turnover --limit 50 -f json
-opencli eastmoney holders 601318 -f json
-opencli eastmoney kline 601318 --help
+| 用途 | URL / Endpoint | 要点 |
+|------|----------------|------|
+| 条件选股 | https://xuangu.eastmoney.com/ | browser 打开；粗筛用 API |
+| search-code | `POST https://np-tjxg-b.eastmoney.com/api/smart-tag/stock/v3/pw/search-code` | body 必须含 `fingerprint:"web"` |
+| 国债收益率 | https://data.eastmoney.com/cjsj/zmgzsyl.html | DOM 解析「30年」 |
+
+### 条件选股查询串
+
+```
+总市值>{N}亿;最新股息率大于等于{2×30Y}%小于等于100%
 ```
 
-`quote` 字段含 `marketCap`（元）→ 脚本里 /1e8 得亿元，过滤 ≥1000 亿。
+字段：`SECURITY_CODE` / `SECURITY_SHORT_NAME` / `DIVIDEND_NEWRATIO` / `TOAL_MARKET_VALUE`（东财拼写）。
 
-## Browser 页面
+脚本：`python scripts/screen_xuangu.py --bond-yield 2.04` → `data/cache/xuangu_universe.json`
 
-| 用途 | URL |
-|------|-----|
-| 分红配送 | https://data.eastmoney.com/yjfp/ |
-| 条件选股 | https://xuangu.eastmoney.com/ |
-| 国债收益率 | https://data.eastmoney.com/cjsj/zfzqyl.html |
+## Browser（国债 / 可选对齐）
 
 ```bash
-opencli browser hongli-em open https://data.eastmoney.com/yjfp/ --window background -f json
-opencli browser hongli-em wait time 4 -f json
-opencli browser hongli-em network -f json          # 存 shape；再 --detail <key> 拉 body
-opencli browser hongli-em eval '(() => [...document.body.innerText.matchAll(/\b([036]\d{5})\b/g)].map(m=>m[1]))()' -f json
+opencli doctor
+opencli browser hongli-em open https://data.eastmoney.com/cjsj/zmgzsyl.html
+opencli browser hongli-em wait time 3
+# DOM 取 30Y；或直接 python scripts/fetch_bond_yield.py --force
+opencli browser hongli-em open https://xuangu.eastmoney.com/
 opencli browser hongli-em close
 ```
 
-脚本封装：`python scripts/screen_eastmoney.py`、`python scripts/fetch_bond_yield.py`。
+## 分红配送 DOM（调试 / 非默认粗筛）
 
-## 筛选落地
+默认报告期常是未来期末。必须先切到有数据的期（如最近 `*-12-31`）。
 
-1. browser/种子 → `data/cache/em_candidates.json`
-2. quote 市值过滤
-3. BaoStock 连续分红等 → `data/cache/em_passed.json`
-4. 通过列表交给 `run_pipeline` / `backtest_pybroker`
+```bash
+opencli browser hongli-em open https://data.eastmoney.com/yjfp/
+opencli browser hongli-em wait time 4
+opencli browser hongli-em select "#filter_date" "2025-12-31"
+opencli browser hongli-em wait time 4
+opencli browser hongli-em eval '(() => {
+  const table = [...document.querySelectorAll("table")].find(t => (t.rows?.length||0) > 10);
+  if (!table) return [];
+  return [...table.querySelectorAll("tr")].map(tr => {
+    const tds = [...tr.querySelectorAll("td")].map(td => td.innerText.replace(/\s+/g," ").trim());
+    if (tds.length < 8 || !/^[036]\d{5}$/.test(tds[0])) return null;
+    return { code: tds[0], name: tds[1], cash_div: tds[6], yield_pct: tds[7] };
+  }).filter(Boolean);
+})()'
+```
+
+## 适配器（补字段）
+
+```bash
+opencli eastmoney quote 601318,600519 -f json   # marketCap 元 → /1e8 亿元
+opencli eastmoney rank --market hs-a --sort turnover --limit 50 -f json
+```
+
+## 脚本封装
+
+| 脚本 | 用途 |
+|------|------|
+| `fetch_bond_yield.py` | browser DOM 抓 30Y（中美页 `zmgzsyl.html`） |
+| `screen_xuangu.py` | **默认粗筛**：市值>1000亿 + 东财最新股息率≥2×30Y |
+| `run_today_scan.py` | 国债 → xuangu → 每票策略 → 买点置顶 |
+| `screen_eastmoney.py` / `screen_cap_yield.py` | 旧 DOM 路径，仅调试 |
+
+## 筛选落地（今日）
+
+1. 国债 → `data/cache/cn_bond_30y.csv`
+2. xuangu 粗筛 → `data/cache/xuangu_universe.json`（含 `em_div_yield_pct`）
+3. 每票策略 → `output/today_scan/{code}.json` + `output/features_{code}.csv`
+4. 汇总 → `output/today_scan/summary.json` + **`REPORT.md`**（买点置顶、含判断条件）

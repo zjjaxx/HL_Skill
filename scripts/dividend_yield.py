@@ -146,7 +146,12 @@ def dividend_yield_series(
 
 
 def yield_percentile_series(div_yield: pd.Series) -> pd.Series:
-    """上市以来股息率历史分位；样本不足约 5 年的早期返回 NaN."""
+    """
+    上市以来股息率历史分位（expanding，含当日）；样本不足约 5 年的早期返回 NaN。
+
+    注意：传入的 div_yield 须覆盖尽可能长的上市历史；若被回测 start 截断，
+    分位会被系统性压低（高股息年份占比变大）。
+    """
     pct = percentile_rank(div_yield)
     # 约 5 年交易日
     min_bars = int(YIELD_HISTORY_MIN_YEARS * 242)

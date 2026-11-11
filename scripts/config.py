@@ -27,6 +27,8 @@ MARKET_CAP_MIN_YI = 1000.0  # 亿元
 DIVIDEND_YEARS = 3
 YIELD_PERCENTILE_BUY = 0.80
 YIELD_HISTORY_MIN_YEARS = 5
+# 股息率历史分位样本起点（策略：上市以来；取足够早覆盖 A 股）
+YIELD_SERIES_START = "2000-01-01"
 TREASURY_YIELD_MULTIPLIER = 2.0
 
 # --- Entry / exit ---
@@ -54,7 +56,7 @@ EASTMONEY_XUANGU = (
     "https://xuangu.eastmoney.com/"
 )
 EASTMONEY_BOND_YIELD = (
-    "https://data.eastmoney.com/cjsj/zfzqyl.html"
+    "https://data.eastmoney.com/cjsj/zmgzsyl.html"  # 中美国债；中国30年在第4列
 )
 EASTMONEY_GUXILV_API_HINT = (
     "https://datacenter-web.eastmoney.com/api/data/v1/get"

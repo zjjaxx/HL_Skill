@@ -126,14 +126,14 @@ def fetch_pair(
     raw_path = out_dir / f"raw_{start}_{end}.csv"
     div_path = out_dir / "dividend.csv"
 
+    if cache and qfq_path.exists() and raw_path.exists() and div_path.exists():
+        qfq = pd.read_csv(qfq_path, parse_dates=["date"])
+        raw = pd.read_csv(raw_path, parse_dates=["date"])
+        div = pd.read_csv(div_path)
+        return {"qfq": qfq, "raw": raw, "dividend": div, "code": code}
+
     _login()
     try:
-        if cache and qfq_path.exists() and raw_path.exists() and div_path.exists():
-            qfq = pd.read_csv(qfq_path, parse_dates=["date"])
-            raw = pd.read_csv(raw_path, parse_dates=["date"])
-            div = pd.read_csv(div_path)
-            return {"qfq": qfq, "raw": raw, "dividend": div, "code": code}
-
         qfq = fetch_kline(symbol, start, end, adjustflag="2")
         raw = fetch_kline(symbol, start, end, adjustflag="3")
         div = fetch_dividend(symbol)

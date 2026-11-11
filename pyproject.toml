@@ -1,0 +1,22 @@
+[project]
+name = "hl-skill"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "zjjaxx", email = "2495893564@qq.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "baostock>=0.9.0",
+    "lib-pybroker>=2.0.0",
+    "numpy>=1.24.0",
+    "pandas>=2.0.0",
+]
+
+[project.scripts]
+hl-skill = "hl_skill:main"
+
+[build-system]
+requires = ["uv_build>=0.12.2,<0.13.0"]
+build-backend = "uv_build"
