@@ -14,7 +14,7 @@
 |------|----------------|------|
 | 条件选股 | https://xuangu.eastmoney.com/ | browser 打开；粗筛用 API |
 | search-code | `POST https://np-tjxg-b.eastmoney.com/api/smart-tag/stock/v3/pw/search-code` | body 必须含 `fingerprint:"web"` |
-| 国债收益率 | https://data.eastmoney.com/cjsj/zmgzsyl.html | DOM 解析「30年」 |
+| 国债收益率 | API `RPTA_WEB_TREASURYYIELD` / 页 https://data.eastmoney.com/cjsj/zmgzsyl.html | 字段 `EMM00166469`=中国30Y；抓不到重试，禁止默认值 |
 
 ### 条件选股查询串
 
@@ -24,7 +24,8 @@
 
 字段：`SECURITY_CODE` / `SECURITY_SHORT_NAME` / `DIVIDEND_NEWRATIO` / `TOAL_MARKET_VALUE`（东财拼写）。
 
-脚本：`python scripts/screen_xuangu.py --bond-yield 2.04` → `data/cache/xuangu_universe.json`
+脚本：先 `python scripts/fetch_bond_yield.py --force` 拿真实 30Y，再  
+`python scripts/screen_xuangu.py --bond-yield <最新30Y>` → `data/cache/xuangu_universe.json`
 
 ## Browser（国债 / 可选对齐）
 
@@ -68,10 +69,10 @@ opencli eastmoney rank --market hs-a --sort turnover --limit 50 -f json
 
 | 脚本 | 用途 |
 |------|------|
-| `fetch_bond_yield.py` | browser DOM 抓 30Y（中美页 `zmgzsyl.html`） |
+| `fetch_bond_yield.py` | 东财 API→browser 抓 30Y；失败重试后报错，不用默认值 |
 | `screen_xuangu.py` | **默认粗筛**：市值>1000亿 + 东财最新股息率≥2×30Y |
 | `run_today_scan.py` | 国债 → xuangu → 每票策略 → 买点置顶 |
-| `screen_eastmoney.py` / `screen_cap_yield.py` | 旧 DOM 路径，仅调试 |
+| `screen_eastmoney.py` | 旧 DOM 路径（仅 `run_pipeline` 可选使用） |
 
 ## 筛选落地（今日）
 
