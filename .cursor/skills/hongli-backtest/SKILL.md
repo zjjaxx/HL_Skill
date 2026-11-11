@@ -1,7 +1,7 @@
 ---
 name: hongli-backtest
 description: >-
-  红利布林策略：先查30Y国债，再用东财条件选股粗筛（市值>1000亿且最新股息率≥2×30Y），
+  红利布林策略：先查30Y国债，再用东财条件选股粗筛（市值>800亿且最新股息率≥2×30Y），
   对每只股票跑策略全流程并落单票结果；今日买点置顶附判断条件。基于 pybroker、
   BaoStock、opencli browser。在用户提到红利回测、今日选股、布林买点、条件选股、
   千亿高股息、多账号接单时使用。
@@ -31,7 +31,7 @@ opencli doctor   # browser 抓东财前必须绿
 
 ```
 - [ ] 1. 查 30Y 国债收益率（browser DOM：中美国债页 zmgzsyl.html）
-- [ ] 2. 东财条件选股粗筛：总市值>1000亿 且 最新股息率(TTM)≥2×30Y
+- [ ] 2. 东财条件选股粗筛：总市值>800亿 且 最新股息率(TTM)≥2×30Y
 - [ ] 3. 对每只候选：策略信号 + 多账号回测——粗筛只用东财股息，报告不展示策略股息率
 - [ ] 4. 每只股票落 JSON；写详细 REPORT.md（买点置顶 + 条件拆解 + 回测轮次）
 ```
@@ -100,7 +100,7 @@ python scripts/run_pipeline.py --skip-browser --seed 601318 --mode multi
 
 - `config.py` — 参数常量
 - `fetch_bond_yield.py` — 东财 API 抓 30Y（失败再 browser DOM）；**禁止 demo/默认值**
-- `screen_xuangu.py` — 条件选股：市值>1000亿 + 东财最新股息率≥2×30Y
+- `screen_xuangu.py` — 条件选股：市值>800亿 + 东财最新股息率≥2×30Y
 - `run_today_scan.py` — **今日扫描主入口**
 - `build_features.py` / `signals.py` / `fundamental.py` / `dividend_yield.py` — 策略复算
 - `fetch_baostock.py` — 日线 qfq/raw、分红
@@ -108,7 +108,7 @@ python scripts/run_pipeline.py --skip-browser --seed 601318 --mode multi
 
 ## 验收
 
-- 粗筛候选均满足：市值>1000亿 且 东财最新股息率≥2×30Y
+- 粗筛候选均满足：市值>800亿 且 东财最新股息率≥2×30Y
 - 每只候选有 `output/features_{code}.csv`
 - 仅输出 `REPORT.md`：有今日买点才写第1节；第2节覆盖全部粗筛股及历史回测表
 - 买入日须同时：硬门槛(含分位≥80%) + 价≤当月forming中轨 + 周%b≤0.25 + 日低>中轨且 0.5<%b≤0.8
