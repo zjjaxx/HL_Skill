@@ -22,13 +22,11 @@ def _longest_cached_raw(symbol: str, end: str) -> pd.DataFrame | None:
     out_dir = CACHE_DIR / stem
     if not out_dir.exists():
         return None
-    best = None
     best_start = None
+    best_df = None
     end_ts = pd.Timestamp(end)
     for p in out_dir.glob("raw_*.csv"):
-        # raw_{start}_{end}.csv
-        parts = p.stem.split("_", 2)
-        if len(parts) < 3:
+        if not p.exists() or p.stat().st_size < 8:
             continue
         try:
             # stem like raw_2007-03-01_2026-11-10
@@ -38,12 +36,16 @@ def _longest_cached_raw(symbol: str, end: str) -> pd.DataFrame | None:
             continue
         if e_ts < end_ts:
             continue
+        try:
+            df = pd.read_csv(p, parse_dates=["date"])
+        except Exception:
+            continue
+        if df.empty or "date" not in df.columns:
+            continue
         if best_start is None or s_ts < best_start:
             best_start = s_ts
-            best = p
-    if best is None:
-        return None
-    return pd.read_csv(best, parse_dates=["date"])
+            best_df = df
+    return best_df
 
 
 def _raw_for_yield_percentile(
@@ -89,22 +91,14 @@ def build_for_symbol(
     feat = attach_higher_tf_to_daily(qfq[["open", "high", "low", "close", "volume"]])
 
     if bond is None:
-        try:
-            bond = load_or_scrape(force=False)
-        except Exception:
-            # flat demo so pipeline still runs offline
-            bond = pd.DataFrame(
-                {
-                    "date": pd.date_range(start, end, freq="B"),
-                    "yield_30y": 2.5,
-                }
-            )
+        bond = load_or_scrape(force=False)
 
     feat = attach_fundamental_columns(
         raw=raw_for_yield,
         qfq_feat=feat,
         dividend=div,
         bond=bond,
+        symbol=symbol,
         market_cap_yi=market_cap_yi,
         default_pass_cap_cf=True,
     )
