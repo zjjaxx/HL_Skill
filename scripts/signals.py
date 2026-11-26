@@ -29,12 +29,12 @@ def add_signals(df: pd.DataFrame) -> pd.DataFrame:
     """
     out = df.copy()
 
-    # Step0 hard_ok 已含：股息×国债 + 分位≥80% + 连续分红 + 现金流 + 市值
+    # Step0 hard_ok 已含：股息×国债 + 分位≥80% + 连续分红 + 分红稳定 + 现金流合计覆盖 + 市值
     # Step1: 最新价（当日 WTD 收=日收）≤ 当月 forming 中轨（纯技术位置）
     week_close = out["w_close"] if "w_close" in out.columns else out["close"]
     step1 = week_close <= out["m_bb_mid"]
 
-    # Step2: 当周 forming %b ≤ 0.25（买入日当天仍满足）
+    # Step2: 当周 forming %b ≤ WEEK_PCTB_BUY_MAX（买入日当天仍满足）
     step2 = out["w_pct_b"] <= WEEK_PCTB_BUY_MAX
 
     # Step3 day: low > day mid, 0.5 < pct_b <= 0.8
