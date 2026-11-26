@@ -2,7 +2,7 @@
 
 ## 原则
 
-1. **今日粗筛主路径**：东财条件选股 API（`search-code`），等价于页面「总市值>800亿;最新股息率…」。
+1. **今日粗筛主路径**：东财条件选股 API（`search-code`），等价于页面「总市值>500亿;最新股息率…;所属东财行业是{白名单}」合并去重。
 2. browser：先 `opencli doctor`，session 名固定 `hongli-em`；打开 xuangu 页作对齐，**筛选结果以 API 为准**。
 3. 粗筛股息率 = 东财 **最新股息率(TTM)**，**不是**策略完整一年股息。
 4. 适配器 `opencli eastmoney quote/rank/...` 仅补字段；分红页 DOM 仅调试/回测用。
@@ -19,10 +19,14 @@
 ### 条件选股查询串
 
 ```
-总市值>{N}亿;最新股息率大于等于{2×30Y}%小于等于100%
+总市值>{N}亿;最新股息率大于等于{2×30Y}%小于等于100%;所属东财行业是{行业}
 ```
 
-字段：`SECURITY_CODE` / `SECURITY_SHORT_NAME` / `DIVIDEND_NEWRATIO` / `TOAL_MARKET_VALUE`（东财拼写）。
+对白名单行业（银行/保险/电力/电信/铁路公路/燃气/油气等）分别查询后合并；  
+再剔除行业文本含航运/证券/白酒/水泥/传媒的标的。  
+`--no-sector-filter` 时退回仅市值+股息。
+
+字段：`SECURITY_CODE` / `SECURITY_SHORT_NAME` / `DIVIDEND_NEWRATIO` / `TOAL_MARKET_VALUE`（东财拼写）/ `INDUSTRY_ALL`。
 
 脚本：先 `python scripts/fetch_bond_yield.py --force` 拿真实 30Y，再  
 `python scripts/screen_xuangu.py --bond-yield <最新30Y>` → `data/cache/xuangu_universe.json`
@@ -70,7 +74,7 @@ opencli eastmoney rank --market hs-a --sort turnover --limit 50 -f json
 | 脚本 | 用途 |
 |------|------|
 | `fetch_bond_yield.py` | 东财 API→browser 抓 30Y；失败重试后报错，不用默认值 |
-| `screen_xuangu.py` | **默认粗筛**：市值>800亿 + 东财最新股息率≥2×30Y |
+| `screen_xuangu.py` | **默认粗筛**：市值>500亿 + 东财最新股息率≥2×30Y + 行业白名单 |
 | `run_today_scan.py` | 国债 → xuangu → 每票策略 → 买点置顶 |
 | `screen_eastmoney.py` | 旧 DOM 路径（仅 `run_pipeline` 可选使用） |
 
