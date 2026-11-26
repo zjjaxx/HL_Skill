@@ -169,6 +169,7 @@ def _snapshot_from_row(row: pd.Series | None) -> dict:
         else False,
         "yield_pctile_ok": bool(cond.get("yield_pctile_ok")),
         "consec_div": bool(row.get("consec_div")) if not pd.isna(row.get("consec_div")) else False,
+        "div_stable": bool(row.get("div_stable")) if not pd.isna(row.get("div_stable")) else False,
         "cashflow_ok": bool(row.get("cashflow_ok")) if not pd.isna(row.get("cashflow_ok")) else False,
         "cap_ok": bool(row.get("cap_ok")) if not pd.isna(row.get("cap_ok")) else False,
         "month_pos_ok": bool(cond.get("month_pos_ok")),
@@ -205,6 +206,7 @@ def _enrich_round(r: dict, feat: pd.DataFrame) -> dict:
         "yield_vs_bond_ok": snap.get("yield_vs_bond_ok"),
         "yield_pctile_ok": snap.get("yield_pctile_ok"),
         "consec_div": snap.get("consec_div"),
+        "div_stable": snap.get("div_stable"),
         "cashflow_ok": snap.get("cashflow_ok"),
         "cap_ok": snap.get("cap_ok"),
         "snap": snap,
@@ -268,7 +270,7 @@ def _write_detail_block(lines: list[str], r: dict) -> None:
     )
     lines.append(
         f"| 周线位置 | 周%b {_fmt(vals.get('w_pct_b'), 3)} |"
-        f" ≤0.25 {_cond_mark(cond.get('week_pctb_ok'))} |"
+        f" ≤{WEEK_PCTB_BUY_MAX:g} {_cond_mark(cond.get('week_pctb_ok'))} |"
     )
     lines.append(
         f"| 月线位置 | 价 {_fmt(vals.get('w_close'))} vs 月中 {_fmt(vals.get('m_bb_mid'))} |"
@@ -286,7 +288,8 @@ def _write_detail_block(lines: list[str], r: dict) -> None:
     lines.append(f"| 股息 ≥ 2×30Y | {_cond_mark(r.get('yield_vs_bond_ok'))} |")
     lines.append(f"| 分位 ≥ 80% | {_cond_mark(cond.get('yield_pctile_ok'))} |")
     lines.append(f"| 连续 3 年分红 | {_cond_mark(r.get('consec_div'))} |")
-    lines.append(f"| 现金流覆盖分红 | {_cond_mark(r.get('cashflow_ok'))} |")
+    lines.append(f"| 分红稳定（同比跌幅≤30%） | {_cond_mark(r.get('div_stable'))} |")
+    lines.append(f"| 现金流合计覆盖分红 | {_cond_mark(r.get('cashflow_ok'))} |")
     lines.append(f"| 市值 ≥ {MARKET_CAP_MIN_YI:g} 亿 | {_cond_mark(r.get('cap_ok'))} |")
     lines.append("")
     lines.append("#### 买入条件检查")
@@ -295,15 +298,15 @@ def _write_detail_block(lines: list[str], r: dict) -> None:
     lines.append("|---|---|---|---|---|")
     lines.append(
         f"| 0 | hard_ok | {_cond_mark(cond.get('hard_ok'))} | - |"
-        f" 股息×国债/分位/连分/现金流/市值 |"
+        f" 股息×国债/分位/连分/分红稳/现金流合计/市值 |"
     )
     lines.append(
         f"| 1 | 价 ≤ 当月 forming 中轨 | {_cond_mark(cond.get('month_pos_ok'))} |"
         f" {_fmt(vals.get('w_close'))} / {_fmt(vals.get('m_bb_mid'))} | ≤ |"
     )
     lines.append(
-        f"| 2 | 周 %b ≤ 0.25 | {_cond_mark(cond.get('week_pctb_ok'))} |"
-        f" {_fmt(vals.get('w_pct_b'), 3)} | ≤ 0.25 |"
+        f"| 2 | 周 %b ≤ {WEEK_PCTB_BUY_MAX:g} | {_cond_mark(cond.get('week_pctb_ok'))} |"
+        f" {_fmt(vals.get('w_pct_b'), 3)} | ≤ {WEEK_PCTB_BUY_MAX:g} |"
     )
     lines.append(
         f"| 3a | 日最低 > 日中轨 | {_cond_mark(cond.get('day_low_gt_mid'))} |"
@@ -332,6 +335,7 @@ def _round_row_cells(rr: dict, *, with_stock: bool = False, code: str = "", name
         f" {_cond_mark(rr.get('yield_vs_bond_ok'))} |"
         f" {_cond_mark(rr.get('yield_pctile_ok'))} |"
         f" {_cond_mark(rr.get('consec_div'))} |"
+        f" {_cond_mark(rr.get('div_stable'))} |"
         f" {_cond_mark(rr.get('cashflow_ok'))} |"
         f" {_cond_mark(rr.get('cap_ok'))} |"
         f" {_fmt(rr.get('cost'), 0)} |"
@@ -366,10 +370,10 @@ def _write_history_table(lines: list[str], bt: dict | None) -> None:
         return
     lines.append(
         "| 买点 | 卖出 | 买入股息率 | 日%b | 周%b | 价/月中 | 硬 | ≥2×30Y | 分位 |"
-        " 连分 | 现金流 | 市值 | 本金 | 收益率 | 最大亏损本金 | 回本天数 | 最大回撤 |"
+        " 连分 | 分红稳 | 现金流 | 市值 | 本金 | 收益率 | 最大亏损本金 | 回本天数 | 最大回撤 |"
     )
     lines.append(
-        "|---|---|---:|---:|---:|---|---|---|---|---|---|---|---:|---:|---:|---:|---:|"
+        "|---|---|---:|---:|---:|---|---|---|---|---|---|---|---|---:|---:|---:|---:|---:|"
     )
     for rr in rounds:
         lines.append(_round_row_cells(rr, with_stock=False))
@@ -416,10 +420,10 @@ def _write_all_rounds_table(lines: list[str], all_rows: list[dict]) -> None:
     lines.append("")
     lines.append(
         "| 代码 | 名称 | 买点 | 卖出 | 买入股息率 | 日%b | 周%b | 价/月中 | 硬 | ≥2×30Y | 分位 |"
-        " 连分 | 现金流 | 市值 | 本金 | 收益率 | 最大亏损本金 | 回本天数 | 最大回撤 |"
+        " 连分 | 分红稳 | 现金流 | 市值 | 本金 | 收益率 | 最大亏损本金 | 回本天数 | 最大回撤 |"
     )
     lines.append(
-        "|---|---|---|---|---:|---:|---:|---|---|---|---|---|---|---|---:|---:|---:|---:|---:|"
+        "|---|---|---|---|---:|---:|---:|---|---|---|---|---|---|---|---|---:|---:|---:|---:|---:|"
     )
     for rr in rounds:
         lines.append(
@@ -536,6 +540,7 @@ def scan_symbol(
         "hard_ok": _flag("hard_ok"),
         "yield_vs_bond_ok": _flag("yield_vs_bond_ok"),
         "consec_div": _flag("consec_div"),
+        "div_stable": _flag("div_stable"),
         "cashflow_ok": _flag("cashflow_ok"),
         "cap_ok": _flag("cap_ok"),
         "buy_today": bool(buy["conditions"]["buy_signal"]),
