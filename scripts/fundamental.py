@@ -1,4 +1,4 @@
-"""基本面硬门槛：股息率≥2×30Y国债、连续3年分红、现金流覆盖、市值≥门槛."""
+"""基本面硬门槛：股息率≥2×30Y国债、连续3年分红、分红稳定、现金流合计覆盖、市值≥门槛."""
 from __future__ import annotations
 
 import json
@@ -9,6 +9,7 @@ import pandas as pd
 
 from config import (
     CACHE_DIR,
+    DIVIDEND_STABLE_MAX_YOY_DROP,
     DIVIDEND_YEARS,
     MARKET_CAP_MIN_YI,
     TREASURY_YIELD_MULTIPLIER,
@@ -33,6 +34,46 @@ def consecutive_dividend_years(divs: pd.DataFrame, asof: pd.Timestamp, n: int = 
     # 要求最近完整 n 个日历年都有现金分红（y-1..y-n）
     need = {y - i for i in range(1, n + 1)}
     return need.issubset(years)
+
+
+def annual_dps(divs: pd.DataFrame, year: int) -> float:
+    """自然年除权日每股现金分红合计。"""
+    if divs.empty:
+        return 0.0
+    d = divs if "cash_ps" in divs.columns else normalize_dividends(divs)
+    return float(d.loc[d["year"] == year, "cash_ps"].sum())
+
+
+def dividend_stable(
+    divs: pd.DataFrame,
+    asof: pd.Timestamp,
+    n: int = DIVIDEND_YEARS,
+    max_yoy_drop: float = DIVIDEND_STABLE_MAX_YOY_DROP,
+) -> bool:
+    """
+    近 n 个完整日历年（y-1..y-n）分红稳定：
+    每股分红同比跌幅不超过 max_yoy_drop（允许多派/利润大增抬高分红）。
+    """
+    if divs.empty:
+        return False
+    d = normalize_dividends(divs) if "cash_ps" not in divs.columns else divs
+    asof = pd.Timestamp(asof)
+    d = d[d["ex_date"] <= asof]
+    if d.empty:
+        return False
+
+    y = asof.year
+    # [y-1, y-2, ..., y-n] → 正序 y-n … y-1 做同比
+    years = [y - i for i in range(n, 0, -1)]
+    dps = [annual_dps(d, yr) for yr in years]
+    if any(v <= 0 for v in dps):
+        return False
+
+    floor = 1.0 - float(max_yoy_drop)
+    for prev, curr in zip(dps, dps[1:]):
+        if prev <= 0 or curr / prev < floor:
+            return False
+    return True
 
 
 def _annual_fund_cache_path(symbol: str) -> Path:
@@ -106,6 +147,46 @@ def _fiscal_years_for_asof(
     return years if len(years) == n else None
 
 
+def cashflow_coverage_flags(
+    symbol: str,
+    divs: pd.DataFrame,
+    asof: pd.Timestamp,
+    n: int = DIVIDEND_YEARS,
+    *,
+    logged_in: bool = False,
+) -> tuple[bool | None, bool | None]:
+    """
+    返回 (逐年覆盖, 合计覆盖)。
+    逐年：每年 CFO ≥ 当年分红；合计：n 年 CFO 之和 ≥ n 年分红之和。
+    任一为 None 表示年报不足。
+    """
+    asof = pd.Timestamp(asof)
+    d = normalize_dividends(divs) if not divs.empty and "cash_ps" not in divs.columns else (
+        divs.copy() if not divs.empty else pd.DataFrame(columns=["ex_date", "cash_ps", "year", "month"])
+    )
+    years = _fiscal_years_for_asof(symbol, asof, n=n, logged_in=logged_in)
+    if not years:
+        return None, None
+
+    cfo_sum = 0.0
+    div_sum = 0.0
+    yearly_ok = True
+    for y in years:
+        row = get_annual_cfo_shares(symbol, y, logged_in=logged_in)
+        if row is None:
+            return None, None
+        div_y = _dividend_cash_total(d, y, float(row["total_share"]))
+        cfo_y = float(row["cfo"])
+        cfo_sum += cfo_y
+        div_sum += div_y
+        if div_y <= 0 or cfo_y < div_y:
+            yearly_ok = False
+
+    if div_sum <= 0:
+        return False, False
+    return yearly_ok, cfo_sum >= div_sum
+
+
 def cashflow_covers_dividends(
     symbol: str,
     divs: pd.DataFrame,
@@ -114,33 +195,11 @@ def cashflow_covers_dividends(
     *,
     logged_in: bool = False,
 ) -> bool | None:
-    """
-    近 n 年经营现金流净额合计 ≥ 近 n 年现金分红合计。
-
-    CFO 由 BaoStock 比率还原：CFOToNP×净利润（或 CFOToOR×营收）。
-    分红总额：各年除权派息每股合计 × 该年总股本。
-    返回 None 表示年报不足，无法判断。
-    """
-    asof = pd.Timestamp(asof)
-    d = normalize_dividends(divs) if not divs.empty and "cash_ps" not in divs.columns else (
-        divs.copy() if not divs.empty else pd.DataFrame(columns=["ex_date", "cash_ps", "year", "month"])
+    """近 n 年经营现金流净额合计 ≥ 近 n 年现金分红合计。"""
+    _, summed = cashflow_coverage_flags(
+        symbol, divs, asof, n=n, logged_in=logged_in
     )
-    years = _fiscal_years_for_asof(symbol, asof, n=n, logged_in=logged_in)
-    if not years:
-        return None
-
-    cfo_sum = 0.0
-    div_sum = 0.0
-    for y in years:
-        row = get_annual_cfo_shares(symbol, y, logged_in=logged_in)
-        if row is None:
-            return None
-        cfo_sum += float(row["cfo"])
-        div_sum += _dividend_cash_total(d, y, float(row["total_share"]))
-
-    if div_sum <= 0:
-        return False
-    return cfo_sum >= div_sum
+    return summed
 
 
 def hard_gate_snapshot(
@@ -154,13 +213,14 @@ def hard_gate_snapshot(
 ) -> dict:
     """
     Evaluate hard gates at asof (default last raw bar).
-    pass_hard: 股息率≥2×30Y + 连续分红 + 现金流覆盖 + 市值。
+    pass_hard: 股息率≥2×30Y + 连续分红 + 分红稳定 + 现金流合计覆盖 + 市值。
     """
     asof = pd.Timestamp(asof or raw["date"].iloc[-1])
     divs = normalize_dividends(dividend) if not dividend.empty else pd.DataFrame()
     price = float(raw.loc[raw["date"] <= asof, "close"].iloc[-1]) if not raw.empty else np.nan
 
     consecutive = consecutive_dividend_years(divs, asof) if not divs.empty else False
+    stable = dividend_stable(divs, asof) if not divs.empty else False
     dy = trailing_year_dividend(divs, asof) / price if price and price > 0 and not divs.empty else 0.0
     dy_pct = dy * 100
 
@@ -176,7 +236,7 @@ def hard_gate_snapshot(
     if bond_yield_pct is not None:
         bond_ok = dy_pct >= TREASURY_YIELD_MULTIPLIER * float(bond_yield_pct)
 
-    pass_all = bool(consecutive and cf_ok and cap_ok and bond_ok)
+    pass_all = bool(consecutive and stable and cf_ok and cap_ok and bond_ok)
 
     return {
         "symbol": to_bs_code(symbol),
@@ -185,6 +245,7 @@ def hard_gate_snapshot(
         "div_yield_pct": dy_pct,
         "bond_yield_pct": bond_yield_pct,
         "consecutive_3y": consecutive,
+        "div_stable": stable,
         "cashflow_ok": cf_ok,
         "market_cap_ok": cap_ok,
         "market_cap_yi": market_cap_yi,
@@ -203,7 +264,7 @@ def attach_fundamental_columns(
 ) -> pd.DataFrame:
     """
     Attach daily fundamental flags used by signals.
-    hard_ok = 股息×国债 + 分位≥80% + 连续3年分红 + 现金流覆盖分红 + 市值。
+    hard_ok = 股息×国债 + 分位≥80% + 连续3年分红 + 分红稳定 + 现金流合计覆盖 + 市值。
     市值未传入且 default_pass_cap_cf=True 时市值默认通过（回测简化）；
     现金流数据不足时不通过（不再默认放过）。
     """
@@ -237,28 +298,46 @@ def attach_fundamental_columns(
     # 现金流按日 asof（年报披露日之前不用未披露年份）；年报数据磁盘缓存
     bond_vals = []
     cons = []
+    stable_ok: list[bool] = []
     cf_ok: list[bool] = []
-    cf_memo: dict[tuple[int, ...] | None, bool] = {}
+    cf_yearly_ok: list[bool] = []
+    cf_memo: dict[tuple[int, ...] | None, tuple[bool, bool]] = {}
+    stable_memo: dict[int, bool] = {}
     with baostock_session():
         for dt in out.index:
             by = asof_yield(bond, dt) if bond is not None and not bond.empty else np.nan
             bond_vals.append(by)
-            cons.append(consecutive_dividend_years(divs, dt) if not divs.empty else False)
-            years = _fiscal_years_for_asof(symbol, pd.Timestamp(dt), logged_in=True)
+            ts = pd.Timestamp(dt)
+            cons.append(consecutive_dividend_years(divs, ts) if not divs.empty else False)
+            ykey = int(ts.year)
+            if ykey not in stable_memo:
+                stable_memo[ykey] = (
+                    dividend_stable(divs, ts) if not divs.empty else False
+                )
+            stable_ok.append(stable_memo[ykey])
+            years = _fiscal_years_for_asof(symbol, ts, logged_in=True)
             key: tuple[int, ...] | None = tuple(years) if years else None
             if key not in cf_memo:
                 if key is None:
-                    cf_memo[key] = False
+                    cf_memo[key] = (False, False)
                 else:
-                    cf = cashflow_covers_dividends(
-                        symbol, divs, pd.Timestamp(dt), logged_in=True
+                    yearly, summed = cashflow_coverage_flags(
+                        symbol, divs, ts, logged_in=True
                     )
-                    cf_memo[key] = bool(cf) if cf is not None else False
-            cf_ok.append(cf_memo[key])
+                    cf_memo[key] = (
+                        bool(yearly) if yearly is not None else False,
+                        bool(summed) if summed is not None else False,
+                    )
+            y_ok, s_ok = cf_memo[key]
+            cf_yearly_ok.append(y_ok)
+            cf_ok.append(s_ok)
 
     out["bond_30y_pct"] = bond_vals
     out["consec_div"] = cons
-    out["cashflow_ok"] = cf_ok
+    out["div_stable"] = stable_ok
+    out["cashflow_ok"] = cf_ok  # 三年合计覆盖（现行 hard_ok）
+    out["cashflow_yearly_ok"] = cf_yearly_ok  # 逐年覆盖（仅诊断，不进 hard_ok）
+    out["cashflow_sum_ok"] = out["cashflow_ok"]  # 兼容旧列名
     out["yield_vs_bond_ok"] = out["div_yield_pct"] >= TREASURY_YIELD_MULTIPLIER * out["bond_30y_pct"]
     out["yield_pctile_ok"] = out["yield_pctile"] >= YIELD_PERCENTILE_BUY
     if market_cap_yi is None and default_pass_cap_cf:
@@ -268,6 +347,15 @@ def attach_fundamental_columns(
     else:
         out["cap_ok"] = market_cap_yi >= MARKET_CAP_MIN_YI
     out["hard_ok"] = (
+        out["yield_vs_bond_ok"]
+        & out["yield_pctile_ok"].fillna(False)
+        & out["consec_div"]
+        & out["div_stable"]
+        & out["cashflow_ok"]
+        & out["cap_ok"]
+    )
+    # 对照：无分红稳定（现金流同为合计）
+    out["hard_ok_old"] = (
         out["yield_vs_bond_ok"]
         & out["yield_pctile_ok"].fillna(False)
         & out["consec_div"]
