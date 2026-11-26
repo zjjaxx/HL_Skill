@@ -23,16 +23,47 @@ VOL_PANIC = 2.0
 VOL_SHRINK = 0.8
 
 # --- Fundamental hard gates ---
-MARKET_CAP_MIN_YI = 800.0  # 亿元
+MARKET_CAP_MIN_YI = 500.0  # 亿元
 DIVIDEND_YEARS = 3
 YIELD_PERCENTILE_BUY = 0.80
 YIELD_HISTORY_MIN_YEARS = 5
 # 股息率历史分位样本起点（策略：上市以来；取足够早覆盖 A 股）
 YIELD_SERIES_START = "2000-01-01"
 TREASURY_YIELD_MULTIPLIER = 2.0
+# 分红稳定：近 N 年每股分红同比跌幅上限（允许多派/利润大增，只挡砍息过狠）
+DIVIDEND_STABLE_MAX_YOY_DROP = 0.30
+
+# --- 粗筛行业白名单（东财「所属东财行业是X」；红利核心+次仓+油气卫星）---
+SECTOR_FILTER_ENABLED = True
+# 主仓：银行 / 保险 / 电力；次仓：电信、铁路公路、燃气；卫星：油气开采
+XUANGU_INDUSTRY_WHITELIST = (
+    "银行",
+    "保险",
+    "电力",
+    "火力发电",
+    "水力发电",
+    "核力发电",
+    "电信运营",
+    "通信服务",
+    "高速公路",
+    "铁路公路",
+    "铁路运输",
+    "燃气",
+    "油气开采",
+    "石油开采",
+)
+# 命中白名单后仍剔除（避免航运港口等脏分类）
+SECTOR_INDUSTRY_BLOCK_KEYWORDS = (
+    "航运",
+    "证券",
+    "白酒",
+    "水泥",
+    "传媒",
+    "航运港口",
+)
 
 # --- Entry / exit ---
-WEEK_PCTB_BUY_MAX = 0.25
+WEEK_PCTB_BUY_MAX = 0.30
 DAY_PCTB_BUY_LOW = 0.50
 DAY_PCTB_BUY_HIGH = 0.80
 WEEK_PCTB_TRIM = 1.0
