@@ -1,73 +1,115 @@
-# 策略与回测口径（摘要）
+---
+name: hongli-backtest
+description: >-
+  红利布林策略：先查30Y国债，再用东财条件选股粗筛（市值>500亿、最新股息率≥2×30Y、
+  行业白名单：银行/保险/电力/电信/铁路公路/燃气/油气），
+  对每只股票跑策略全流程并落单票结果；今日买点置顶附判断条件。基于 pybroker、
+  BaoStock、opencli browser。在用户提到红利回测、今日选股、布林买点、条件选股、
+  千亿高股息、多账号接单时使用。
+---
 
-完整原文：`blog/src/post/布林线.md`
+# 红利布林回测 / 今日扫描
 
-## 价格口径
+策略原文：`/Users/zhengjiajun/zjj/learn/blog/src/post/布林线.md`  
+细则摘要：[reference.md](reference.md) · 东财抓取：[eastmoney.md](eastmoney.md)
 
-| 用途 | 复权 |
+工作区根目录：`/Users/zhengjiajun/zjj/learn/红利`  
+量化脚本：`scripts/`（全部可执行）
+
+## 环境
+
+```bash
+cd /Users/zhengjiajun/zjj/learn/红利
+python3.12 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+# 或：pip install "git+https://github.com/edtechre/pybroker.git@v2.0.2" baostock pandas numpy
+opencli doctor   # browser 抓东财前必须绿
+```
+
+## 今日扫描（默认主流程）
+
+复制并勾选：
+
+```
+- [ ] 1. 查 30Y 国债收益率（browser DOM：中美国债页 zmgzsyl.html）
+- [ ] 2. 东财条件选股粗筛：总市值>500亿 且 最新股息率(TTM)≥2×30Y 且行业白名单
+- [ ] 3. 对每只候选：策略信号 + 多账号回测——粗筛只用东财股息，报告不展示策略股息率
+- [ ] 4. 每只股票落 JSON；写详细 REPORT.md（买点置顶 + 条件拆解 + 回测轮次）
+```
+
+### 一键
+
+```bash
+source .venv/bin/activate
+python scripts/run_today_scan.py
+# 只跑前 N 只；国债必须真实抓取（API 优先，失败重试，禁止默认值）
+python scripts/run_today_scan.py --limit 10
+# 无 browser（国债仍走东财 API；抓不到直接报错）：
+python scripts/run_today_scan.py --no-browser --limit 10
+```
+
+### 输出
+
+| 路径 | 内容 |
 |------|------|
-| 布林、%b、周/月位置、站上中轨 | 前复权 |
-| 成交价、股息率分母、现金分红入账 | 不复权 |
+| `output/today_scan/REPORT.md` | **唯一报告**：①今日推荐（无则跳过）②东财粗筛全部个股详情+历史回测表 |
+| `output/features_{code}.csv` | 单票特征/信号（中间数据） |
+| `data/cache/cn_bond_30y.csv` | 国债序列 |
+| `data/cache/xuangu_universe.json` | 条件选股粗筛池 |
 
-- BB(20, 2)；%b=(价−下)/(上−下)；带宽=(上−下)/中轨
-- RSI 14；MFI 10；均量 20 周（放量 1.5× / 恐慌 2× / 缩量 0.8×）
-- 主周期周线；月线定位置；日线优化执行
+报告每只股票含：当前买点/策略股息率/日周月位置/硬门槛；历史轮次表（买点、买入股息率、日周月、硬门槛、本金、收益率、最大亏损本金、回本天数、最大回撤）。  
+股息**历史分位**必须按上市以来序列（`YIELD_SERIES_START`），**不得**用回测 `start` 截断样本。
 
-## 第 0 步硬门槛（须全部满足才可买；均进 `hard_ok`）
+### 今日买点须同时满足（与 `signals.py` 一致）
 
-1. 股息率 ≥ 2 × 30 年国债收益率
-2. 股息历史分位 ≥ 80%（上市以来，样本不足约 5 年则不可买）
-3. 连续 3 年分红
-4. **分红稳定**：近 3 年每股分红同比跌幅 ≤ 30%（允许多派；只挡砍息过狠）
-5. **现金流覆盖分红**：近 3 年经营现金流净额合计 ≥ 近 3 年现金分红合计（CFO≈CFOToNP×净利润）
-6. 市值 ≥ 500 亿（未传入时可默认通过）
+0. `hard_ok`（股息≥2×30Y + 分位≥80% + 连续分红 + 分红稳定 + 现金流合计覆盖 + 市值）  
+1. 最新价 ≤ 当月 forming 中轨  
+2. 当周 forming %b ≤ 0.30  
+3. 日最低价 > 日中轨，且 `0.5 < 日%b ≤ 0.8`  
+   （日/周/月均用截至当日 forming；例 10/15 → 用 10/15 的日周月指标）
 
-### 粗筛行业白名单（东财条件选股，先于单票策略）
+## 回测流水线（可选）
 
-默认开启（`SECTOR_FILTER_ENABLED`）：只保留红利友好板块。
+```bash
+python scripts/run_pipeline.py --seed 601318 600900 601088 --start 2018-01-01
+python scripts/run_pipeline.py --skip-browser --seed 601318 --mode multi
+```
 
-| 层级 | 东财行业关键词 |
-|------|----------------|
-| 主仓 | 银行、保险、电力（含火力/水力/核力发电） |
-| 次仓 | 电信运营/通信服务、高速公路、铁路公路/铁路运输、燃气 |
-| 卫星 | 油气开采/石油开采 |
+### 分步脚本
 
-命中后仍剔除行业文本含：航运、证券、白酒、水泥、传媒。  
-关闭过滤：`screen_xuangu.py --no-sector-filter`。
+| 步骤 | 命令 |
+|------|------|
+| 今日扫描 | `python scripts/run_today_scan.py` |
+| 国债 | `python scripts/fetch_bond_yield.py --force`（API→browser 重试，失败报错） |
+| 条件选股粗筛 | `python scripts/screen_xuangu.py --bond-yield <真实30Y>` |
+| 行情/特征（单票） | `python scripts/build_features.py 601318 --start 2018-01-01` |
+| 回测 | `python scripts/backtest_pybroker.py 601318 --mode both --start 2018-01-01` |
 
-### 股息率
+## Agent 执行约定
 
-`完整一年每股股息 / 当日不复权收盘`  
-完整一年 = 按上一日历年派息**期次**模板拼接（今年已派第 i 期用今年，否则用去年第 i 期；今年期数更多则多出的计入）。
+1. **先读** `reference.md` 确认硬门槛与买卖口径，再改代码。
+2. **可量化逻辑只许改 `scripts/`**，不要把规则只写在对话里。
+3. **默认主入口** `run_today_scan.py`：国债 → xuangu(东财股息) → 每票策略 → 买点置顶。
+4. **国债必须真实抓取**：API 优先、失败继续重试（可再走 browser）；抓不到就报错退出，**禁止** `--bond-demo` / 固定 2.5% / 静默默认值。
+5. 粗筛用东财 TTM；报告只展示 `em_div_yield_pct`，不写策略股息率字段。
+6. 每票默认跑多账号回测（`--n 0` 按需建户；`--n N` 固定账号数；`--skip-backtest` 可跳过）。
+7. browser：session `hongli-em`；`browser` 子命令不要加 `-f json`。
+8. 价格口径：技术指标用**前复权**；成交/派息入账用**不复权**。
+9. 输出落到 `output/`，缓存落到 `data/cache/`。
 
-## 买卖顺序
+## 脚本职责
 
-0. 硬门槛（含绝对股息率 + 历史分位≥80%）  
-1. 月：最新价 ≤ 当月 forming 中轨  
-2. 周：当周 forming（截至当日）%b ≤ 0.30（须买入日仍满足）
-3. 日：最低价 > 当日日线中轨，且 `0.5 < %b ≤ 0.8`；同月限购 1 次  
-   （日/周/月一律用截至当日的 forming K 重算，例：10/15 用 10/15 当日的日、周、月指标）
-4. 持有：不因日线止损，靠股息消化浮亏  
-5. 减仓：
-   - 周 %b ≥ 1 → 卖 20%（同波段一次）
-   - 月 %b ≥ 1 → 卖 30%（同波段一次）
-   - 分位从 ≥80 回落到 78/76/74/72/70：每档卖「阶梯首次触发时持仓」的 10%；≤70 清仓
+- `config.py` — 参数常量
+- `fetch_bond_yield.py` — 东财 API 抓 30Y（失败再 browser DOM）；**禁止 demo/默认值**
+- `screen_xuangu.py` — 条件选股：市值>500亿 + 东财最新股息率≥2×30Y + 行业白名单
+- `run_today_scan.py` — **今日扫描主入口**
+- `build_features.py` / `signals.py` / `fundamental.py` / `dividend_yield.py` — 策略复算
+- `fetch_baostock.py` — 日线 qfq/raw、分红
+- `run_pipeline.py` — 回测端到端
 
-## 多账号滚动
+## 验收
 
-- 每账号初始 100 万；全仓买；独立减仓档；除权日股息入现金
-- **默认按需建户**：空闲则复用，全忙则新建；`N` = 实际创建数
-- 也可固定 N：全忙 → `miss_busy`（不新建）
-- 同月限购全局 → `miss_month`
-- 资金池收益 = Σ期末权益 / (N×100万) − 1
-
-## 本金浮亏
-
-- 成本 = 买入金额（不复权×股数）
-- 路径权益 = 已实现（卖出回笼+股息）+ 余仓×当日不复权收盘
-- 本金最大浮亏 = min(权益−成本)
-- 价 MAE 不含股息；本金浮亏含股息与减仓回笼
-
-## 已知简化
-
-收盘价成交、无滑点佣金、已完成周/月 K、未建模停牌涨跌停。
+- 粗筛候选均满足：市值>500亿 且 东财最新股息率≥2×30Y 且行业白名单（银行/保险/电力/电信/铁路公路/燃气/油气；剔航运证券白酒等）
+- 每只候选有 `output/features_{code}.csv`
+- 仅输出 `REPORT.md`：有今日买点才写第1节；第2节覆盖全部粗筛股及历史回测表
+- 买入日须同时：硬门槛(含分位≥80%) + 价≤当月forming中轨 + 周%b≤0.30 + 日低>中轨且 0.5<%b≤0.8
