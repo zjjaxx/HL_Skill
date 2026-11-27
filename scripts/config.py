@@ -35,10 +35,11 @@ DIVIDEND_STABLE_MAX_YOY_DROP = 0.30
 
 # --- 粗筛行业白名单（东财「所属东财行业是X」；红利核心+次仓+油气卫星）---
 SECTOR_FILTER_ENABLED = True
-# 主仓：银行 / 保险 / 电力；次仓：电信、铁路公路、燃气；卫星：油气开采
+# 主仓：银行 / 保险 / 电力；次仓：证券、电信、铁路公路、燃气；卫星：油气开采
 XUANGU_INDUSTRY_WHITELIST = (
     "银行",
     "保险",
+    "证券",
     "电力",
     "火力发电",
     "水力发电",
@@ -55,7 +56,6 @@ XUANGU_INDUSTRY_WHITELIST = (
 # 命中白名单后仍剔除（避免航运港口等脏分类）
 SECTOR_INDUSTRY_BLOCK_KEYWORDS = (
     "航运",
-    "证券",
     "白酒",
     "水泥",
     "传媒",
