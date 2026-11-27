@@ -3,8 +3,8 @@
   总市值>门槛 + 最新股息率(TTM)≥2×30Y + 红利行业白名单。
 
 行业口径（配置 XUANGU_INDUSTRY_WHITELIST）：
-  主仓 银行/保险/电力；次仓 电信/铁路公路/燃气；卫星 油气开采。
-  明确不碰：航运、证券、白酒、水泥、传媒等（SECTOR_INDUSTRY_BLOCK_KEYWORDS）。
+  主仓 银行/保险/电力；次仓 证券/电信/铁路公路/燃气；卫星 油气开采。
+  明确不碰：航运、白酒、水泥、传媒等（SECTOR_INDUSTRY_BLOCK_KEYWORDS）。
 
 流程：
 1) opencli browser 打开 https://xuangu.eastmoney.com/（session=hongli-em）
@@ -262,8 +262,8 @@ def screen_xuangu(
         "note": (
             "粗筛=东财条件选股：总市值>门槛 且 最新股息率(TTM)≥2×30Y"
             + (
-                " 且行业白名单(银行/保险/电力/电信/铁路公路/燃气/油气)；"
-                "剔除航运/证券/白酒/水泥/传媒。"
+                " 且行业白名单(银行/保险/证券/电力/电信/铁路公路/燃气/油气)；"
+                "剔除航运/白酒/水泥/传媒。"
                 if use_sector
                 else "；未启用行业过滤。"
             )
